@@ -1,0 +1,82 @@
+name: Terraform Apply
+
+on:
+  workflow_dispatch:
+
+jobs:
+  Terraform-apply:
+    name: Terraform apply
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: terraform
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Run Trivy vulnerability scanner in IaC mode
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          hide-progress: false
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+
+      - name: Exit if the branch is not main
+        run: |
+          if [[ "${{ github.ref }}" != "refs/heads/main" ]]; then
+            echo "Branch is not main, exiting."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_NON_PROD_DEPLOYMENT_USER_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_NON_PROD_DEPLOYMENT_USER_SECRET_ACCESS_KEY }}
+          aws-region: eu-west-1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -var-file="./config/variables.tfvars" \
+            -backend-config="./config/backend.conf"
+
+      - name: Terraform Format
+        run: terraform fmt -recursive -check
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: |
+          terraform plan \
+            -var-file="./config/variables.tfvars"
+
+      - name: Terraform Apply
+        run: |
+          terraform apply \
+            --auto-approve \
+            -var-file="./config/variables.tfvars"
+
+  Post-To-Slack:
+    name: Post to slack
+    runs-on: ubuntu-22.04
+    if: always()
+    needs: Terraform-apply
+    environment: production
+    steps:
+      - name: Slack workflow summary
+        uses: crederauk/slack-workflow-summary@v1.2.2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK }}
+          success-emoji: ":heavy-check-mark:"
+          skipped-emoji: ":heavy-minus-sign:"
+          failed-emoji: ":heavy-cross-mark:"
